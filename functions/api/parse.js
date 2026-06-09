@@ -3,6 +3,9 @@ export async function onRequestPost(context) {
     const { prompt } = await context.request.json()
     const key = context.env.GROQ_API_KEY
 
+    console.log('[parse] key present:', !!key)
+    console.log('[parse] key prefix:', key ? key.slice(0, 10) : 'MISSING')
+
     if (!key) {
       return new Response(JSON.stringify({ error: 'API key not configured' }), {
         status: 500, headers: { 'Content-Type': 'application/json' }
@@ -23,10 +26,16 @@ export async function onRequestPost(context) {
       })
     })
 
+    console.log('[parse] groq status:', res.status)
+
     const data = await res.json()
 
+    console.log('[parse] groq response keys:', Object.keys(data))
+    if (!res.ok) console.log('[parse] groq error:', JSON.stringify(data))
+
     if (!res.ok) {
-      return new Response(JSON.stringify({ error: data.error?.message || 'Groq API error' }), {
+      const msg = data.error?.message || `Groq API error (${res.status})`
+      return new Response(JSON.stringify({ error: `[${res.status}] ${msg}` }), {
         status: res.status, headers: { 'Content-Type': 'application/json' }
       })
     }
@@ -36,6 +45,7 @@ export async function onRequestPost(context) {
     })
 
   } catch (e) {
+    console.log('[parse] exception:', e.message)
     return new Response(JSON.stringify({ error: e.message }), {
       status: 500, headers: { 'Content-Type': 'application/json' }
     })
