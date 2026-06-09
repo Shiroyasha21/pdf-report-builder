@@ -1,6 +1,38 @@
 import { useState } from 'react'
 
-const GROQ_ENDPOINT = '/api/parse'
+async function callGroq(prompt) {
+  const devKey = import.meta.env.VITE_GROQ_API_KEY
+
+  if (devKey) {
+    // Local dev — direct call
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${devKey}`
+      },
+      body: JSON.stringify({
+        model: 'llama-3.1-8b-instant',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.2,
+        max_tokens: 4096,
+      })
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error?.message || `Groq error (${res.status})`)
+    return data.choices[0].message.content
+  } else {
+    // Production — via Cloudflare Worker proxy
+    const res = await fetch('/api/parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt })
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
+    return data.content
+  }
+}
 
 export function useGroq() {
   const [loading, setLoading] = useState(false)
@@ -28,73 +60,58 @@ PARSING RULES:
 2. SUBTITLE: Short descriptor like "End of Shift Report" or "Operations Summary".
 3. DATE: Extract the primary date in readable format (e.g. "Monday, June 8, 2026").
 4. SECTIONS — choose the right type:
-   - "snapshot": Use ONLY for 3–6 high-level counters/metrics at the top (e.g. "Jobs Today: 2, Completed: 1"). Each item: { label, value, sub }.
-   - "keyvalue": For a single record's labeled fields (one job, one contact, etc.). Include a "status" field (e.g. "Completed", "In Progress") and "statusColor" ("green"/"red"/"amber"/"blue"/"gray"). Rows: { label, value, highlight }.
-   - "table": For 2+ records with 3+ consistent columns. Specify exact headers. Rows must match header count exactly.
+   - "snapshot": Use ONLY for 3–6 high-level counters/metrics (e.g. "Jobs Today: 2, Completed: 1"). Each item: { label, value, sub }.
+   - "keyvalue": For a single record's labeled fields (one job, one contact). Include "status" and "statusColor". Rows: { label, value, highlight }.
+   - "table": For 2+ records with 3+ consistent columns. Exact headers. Rows must match header count.
    - "text": For notes, narratives, or freeform content.
 5. HIGHLIGHT RULES for keyvalue rows:
-   - green → paid, complete, approved, confirmed, good, done, settled, resolved
-   - red → overdue, failed, cancelled, missing, rejected, void
-   - amber → pending, in progress, waiting, open, review, submitted, not confirmed
-   - blue → IDs, reference numbers, links, informational
-   - none → default neutral fields
-6. TABLES: Make headers concise. Trim cell values. Pad missing cells with "—".
-7. OMIT sections with no data, marked "omit", or not applicable.
-8. Multiple similar records (e.g. multiple jobs) = separate keyvalue section each.
-9. STATUS BADGE: Every keyvalue section MUST have "status" and "statusColor".
+   - green → paid, complete, approved, confirmed, good, done, settled
+   - red → overdue, failed, cancelled, missing, rejected
+   - amber → pending, in progress, waiting, open, submitted, not confirmed
+   - blue → IDs, reference numbers, informational
+   - none → default
+6. OMIT sections with no data or marked "omit".
+7. Multiple similar records = separate keyvalue section each.
+8. Every keyvalue section MUST have "status" and "statusColor" (green/red/amber/blue/gray).
 
-Return ONLY valid JSON — no markdown, no explanation, no code block:
+Return ONLY valid JSON — no markdown fences, no explanation:
 {
   "title": "string",
   "subtitle": "string or null",
   "date": "string or null",
+  "meta": "string or null",
   "sections": [
     {
       "id": "unique_snake_case_id",
       "type": "snapshot | keyvalue | table | text",
       "title": "SECTION TITLE",
-      "status": "string (keyvalue only, e.g. Completed)",
+      "status": "string (keyvalue only)",
       "statusColor": "green | red | amber | blue | gray (keyvalue only)",
-      "data": {
-        // snapshot:  { "items": [{ "label": "string", "value": "string", "sub": "string|null" }] }
-        // keyvalue:  { "rows": [{ "label": "string", "value": "string", "highlight": "none|green|red|amber|blue" }] }
-        // table:     { "headers": ["col1","col2",...], "rows": [["val1","val2",...]] }
-        // text:      { "content": "string" }
-      }
+      "pageBreakBefore": false,
+      "data": {}
     }
   ]
 }
 
-RAW DATA TO PARSE:
+Data formats:
+- snapshot: { "items": [{ "label": "string", "value": "string", "sub": "string|null" }] }
+- keyvalue: { "rows": [{ "label": "string", "value": "string", "highlight": "none|green|red|amber|blue" }] }
+- table:    { "headers": ["col1","col2",...], "rows": [["val1","val2",...]] }
+- text:     { "content": "string" }
+
+RAW DATA:
 ${rawText}`
 
     try {
-      const res = await fetch(GROQ_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
-      })
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err.error || `Request failed (${res.status})`)
-      }
-
-      const data = await res.json()
-      const text = data.content
-
-      // Extract JSON — handle potential markdown code fences
+      const text = await callGroq(prompt)
       const jsonMatch = text.match(/\{[\s\S]*\}/)
       if (!jsonMatch) throw new Error('Could not extract structured data from AI response.')
-
       const parsed = JSON.parse(jsonMatch[0])
-
-      // Ensure all sections have an id
       parsed.sections = (parsed.sections || []).map((s, i) => ({
+        pageBreakBefore: false,
         ...s,
-        id: s.id || `section_${i}`
+        id: s.id || `s_${i}_${Date.now()}`
       }))
-
       return parsed
     } catch (e) {
       setError(e.message)
