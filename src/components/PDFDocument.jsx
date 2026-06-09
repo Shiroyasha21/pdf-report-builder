@@ -240,14 +240,14 @@ export default function PDFDocument({ docData, preset }) {
         {/* Meta row */}
         <View style={s.metaWrap}>
           <Text style={s.metaLeft}>{date}</Text>
-          <Text style={s.metaRight}>Submitted by: Operations Coordinator</Text>
+          <Text style={s.metaRight}>{docData.meta || 'Submitted by: Operations Coordinator'}</Text>
         </View>
 
         <View style={s.sp14} />
 
         {/* Sections */}
         {docData.sections.map((section, i) => (
-          <View key={section.id || i}>
+          <View key={section.id || i} break={section.pageBreakBefore === true}>
             {/* Section header — keyvalue gets its own card header instead */}
             {section.type !== 'keyvalue' && (
               <>
